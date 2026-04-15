@@ -60,8 +60,13 @@ _G.BetterTerm.switch_funcs = _G.BetterTerm.switch_funcs or {}
 ---@param bufname string
 local function get_inactive_clickable_tab(bufname)
   local func_name = "switch_" .. fn.substitute(bufname, "[^A-Za-z0-9_]", "_", "g")
-  _G.BetterTerm.switch_funcs[func_name] = function()
-    M.switch_to(bufname)
+  ---@diagnostic disable-next-line: unused-local
+  _G.BetterTerm.switch_funcs[func_name] = function(minwid, clicks, button, mods)
+    if button == "m" then -- middle-click → close
+      M.close(bufname)
+    else -- left-click (existing behaviour)
+      M.switch_to(bufname)
+    end
   end
   return string.format(
     "%%#%s#%%@v:lua._G.BetterTerm.switch_funcs.%s@  %s  %%X",
@@ -730,8 +735,16 @@ function M.setup(user_options)
         return
       end
 
-      vim.keymap.del({ "t" }, tostring(options.jump_tab_mapping:gsub("$tab", index)))
+      -- Capture BEFORE mutating state
       local sorted_index = indexOf(State.sorted_keys, bufname)
+      local active_bufname = vim.bo.ft == ft and fn.bufname("%") or nil
+      local was_active = (active_bufname == bufname)
+
+      -- Cleanup keymaps
+      pcall(vim.keymap.del, { "t" }, options.jump_tab_mapping:gsub("$tab", index))
+      pcall(vim.keymap.del, { "n", "t" }, options.jump_tab_mapping:gsub("$tab", index))
+
+      -- Cleanup state
       State.terms[index] = nil
       State.term_lookup[bufname] = nil
       if sorted_index then
@@ -739,12 +752,22 @@ function M.setup(user_options)
       end
 
       vim.defer_fn(function()
-        if sorted_index and sorted_index > 1 then
-          M.open(State.sorted_keys[sorted_index - 1])
-        elseif sorted_index and #State.sorted_keys >= 1 then
-          M.open(State.sorted_keys[1])
-        else
+        -- If a different terminal was active, just refresh the winbar
+        if not was_active then
           update_term_winbar()
+          return
+        end
+
+        -- The active terminal was closed — navigate to an adjacent one
+        if #State.sorted_keys == 0 then
+          -- No terminals left
+          update_term_winbar()
+        elseif sorted_index and sorted_index <= #State.sorted_keys then
+          -- Prefer the terminal now occupying the same slot (next one)
+          M.open(State.sorted_keys[sorted_index])
+        else
+          -- Was the last in list, go to new last
+          M.open(State.sorted_keys[#State.sorted_keys])
         end
       end, 10)
     end,
