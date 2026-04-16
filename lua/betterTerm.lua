@@ -811,4 +811,73 @@ function M.setup(user_options)
   )
 end
 
+---@class BetterTermCmdOptions
+---@field position? string
+---@field cwd? string
+---@field scratch? boolean  -- default: true. On process exit, wait for keypress then close.
+
+--TODO: make the scratch buffer work, not working still
+function M.open_cmd(command, opts)
+  opts = opts or {}
+  local scratch = opts.scratch ~= false -- default true
+
+  local index = term_current
+  local saved_open_buf = open_buf
+  if opts.position then
+    open_buf = opts.position .. " sb "
+  end
+
+  local bufname = get_or_create_term(index)
+  create_new_term(bufname, api.nvim_get_current_tabpage(), { cwd = opts.cwd })
+  open_buf = saved_open_buf
+
+  if command and command ~= "" then
+    vim.defer_fn(function()
+      local term = State.terms[index]
+      if term and term.jobid > 0 then
+        api.nvim_chan_send(term.jobid, command .. "\n")
+      end
+    end, 100)
+  end
+
+  if scratch then
+    local term = State.terms[index]
+    local bufid = term.bufid
+
+    api.nvim_create_autocmd("TermClose", {
+      buffer = bufid,
+      once = true,
+      callback = function()
+        vim.defer_fn(function()
+          if not api.nvim_buf_is_valid(bufid) then
+            return
+          end
+          local winid = term.winid
+          if not (winid and api.nvim_win_is_valid(winid)) then
+            return
+          end
+
+          api.nvim_win_set_option(
+            winid,
+            "winbar",
+            "%#WarningMsg# Process finished — press any key to close %#Normal#"
+          )
+          vim.cmd("stopinsert")
+          api.nvim_set_current_win(winid)
+
+          local ns = api.nvim_create_namespace("betterterm_close_" .. bufid)
+          vim.on_key(function()
+            vim.on_key(nil, ns)
+            vim.schedule(function()
+              if api.nvim_buf_is_valid(bufid) then
+                M.close(index)
+              end
+            end)
+          end, ns)
+        end, 50)
+      end,
+    })
+  end
+end
+
 return M
